@@ -53,11 +53,11 @@ INA226_Class INA226;                            // Construct a power monitor obj
    uint8_t  pwrState = 0;
 
    /*********    "LOCAL" VARIABLES     *********/
-   bool     firstStrike       = 0;
-   uint32_t t_firstStrike = 0;
+   bool     firstStrike1   = 0;
+   uint32_t t_firstStrike1 = 0;
 
-   bool     alreadyCharging        = 0;
-   uint32_t t_firstStartedCharging = 0;
+   bool     firstStrike2   = 0;
+   uint32_t t_firstStrike2 = 0;
 
    bool previousChargeEnabledState = 0;
 
@@ -432,38 +432,48 @@ void loop() {
                    case 0: {
                            turn(chargeON);
 
-                           // 1. Cond : We don't want to energise this relay when on battery power
-                           // 2. Cond : For when we disconnect battery from system manually (switch on back) and it's plugged in
+                           // 1.  Cond : We don't want to energise this relay when on battery power
+                           // 2.  Cond : For when we disconnect battery from system manually (switch on back) and it's plugged in
                            //           Going into chargeOFF mode will mean we never charge battery again untill hard restart
-                           // 3. Cond : If pack is drawing less than 300 mA, we decide that it reached its end of charge (we don't insist on pushing cells too hard either)
-                           if ( negativeAmps && (abs(avgCurrent) > 20) && (avgCurrent > -220000) ) if (!firstStrike) {
-                                                                                                                     firstStrike = 1;
-                                                                                                                     t_firstStrike = theTime;
+                           // 3.1 Cond : If pack is drawing less than 150mA, we decide that it reached its end of charge (cannot use mA if amp is on and draws current as well
+                           // 3.2 Cond : If pack voltage goes over    25.2v, we decide that it reached its end of charge (given variable amp draw, and the fact that the battery will charge very slowly (250-150 = 100mA MAX), this might take a while)
+                           
+                           if ( negativeAmps           && 
+                                (abs(avgCurrent) > 20) && 
+                                
+                                ( 
+                                  ((avgCurrent > -150000) && currentAmpState==0)
+                                  ||
+                                  ((avgVoltage > 25200  ) && currentAmpState==1) 
+                                )    
+                                                                                    ) if (!firstStrike1) {
+                                                                                                                     firstStrike1 = 1;
+                                                                                                                     t_firstStrike1 = theTime;
                                                                                                                      }
                                                                                                    else {
-                                                                                                        if ( abs(theTime - t_firstStrike) > 15000) {
-                                                                                                                                                   firstStrike     = 0;
-                                                                                                                                                   alreadyCharging = 0;
-                                                                                                                                                   pwrState        = 1;
+                                                                                                        if ( abs(theTime - t_firstStrike1) > 15000) {
+                                                                                                                                                   firstStrike1 = 0;
+                                                                                                                                                   firstStrike2 = 0;
+                                                                                                                                                   pwrState     = 1;
                                                                                                                                                    }
                                                                                                         }
-                           else firstStrike = 0;
+                           else firstStrike1 = 0;
 
 
 
-                           // As batteries age, internal resistance goes up, and at some point they act like resistors, which will mean current will never settle down. Time out after 3 hours
-                           if (state_EXTERNAL_POWER && state_BATT_ONLINE) if (!alreadyCharging) {
-                                                                                                alreadyCharging = 1;
-                                                                                                t_firstStartedCharging = theTime;
+                           // As batteries age, internal resistance goes up, and at some point they act like resistors, which will mean current will never settle down. Time out after 10 hours
+                           if (state_EXTERNAL_POWER && state_BATT_ONLINE) if (!firstStrike2) {
+                                                                                                firstStrike2 = 1;
+                                                                                                t_firstStrike2 = theTime;
                                                                                                 }
                                                                           else {
-                                                                               if ( abs(theTime - t_firstStartedCharging) > 10800000 ) {
-                                                                                                                                       alreadyCharging = 0;
-                                                                                                                                       firstStrike     = 0;
-                                                                                                                                       pwrState        = 1;
-                                                                                                                                       }
+                                                                               if ( abs(theTime - t_firstStrike2) > 36000000 ) {
+                                                                                                                               firstStrike1 = 0;
+                                                                                                                               firstStrike2 = 0;
+                                                                                                                               pwrState     = 1;
+                                                                                                                               }
                                                                                }
-                           else alreadyCharging = 0;
+                           else firstStrike2 = 0;
                                                                                                                       
                          
                          
@@ -476,20 +486,23 @@ void loop() {
                    case 1: {
                            turn(chargeOFF);
 
-                           // Once external power no longer present, it doesn't make sense to keep the NO-CHARGE relay energised
-                           if (state_EXTERNAL_POWER == 0) if (!firstStrike) {
-                                                                            firstStrike = 1;
-                                                                            t_firstStrike = theTime;
-                                                                            }
-                                                          else {
-                                                               if ( abs(theTime - t_firstStrike) > 10000) {
-                                                                                                          firstStrike     = 0;
-                                                                                                          alreadyCharging = 0;
-                                                                                                          pwrState        = 0;
-                                                                                                          }
-                                                               }
-                           else firstStrike = 0;
-                    
+                           // 1. Cond : Once external power no longer present, it doesn't make sense to keep the NO-CHARGE relay energised
+                           // 2. Cond : In case we stop charging too soon (ie 10 hours pass and we've listened to music in that time and thus charged the battery at only 100mA), we go back to charging
+                           //           In case somehow battery voltage drops while in "storage" or from helping the booster keep the voltage up in case there's more than 250mA of draw from amp
+                           if (state_EXTERNAL_POWER == 0 ||
+                               avgVoltage           <  24800 ) if (!firstStrike1) {
+                                                                                  firstStrike1 = 1;
+                                                                                  t_firstStrike1 = theTime;
+                                                                                  }
+                                                               else               {
+                                                                                  if ( abs(theTime - t_firstStrike1) > 10000) {
+                                                                                                                              firstStrike1 = 0;
+                                                                                                                              firstStrike2 = 0;
+                                                                                                                              pwrState     = 0;
+                                                                                                                              }
+                                                                                  }
+                           else firstStrike1 = 0;
+
                    }break;
 
 
@@ -630,7 +643,7 @@ bool newPowerMonitorReadings() {
                                                                          if (avgCurrent > 0)     negativeAmps = 0;
                                                                          else                    negativeAmps = 1;
                        
-                                                                         if (avgVoltage < 21000) lowBattery = 1;
+                                                                         if (avgVoltage < 21500) lowBattery = 1;
                                                                          else                    lowBattery = 0;
                                                                          }
                                                   else                   {
@@ -687,7 +700,7 @@ void refreshDisplay() {
 
                                                    if (mAs>=3600) {                                          // Accrue mAh every 2 seconds (4 half-seconds)
                                                                   mAh += mAs / 3600;
-                                                                  mAs = 0;
+                                                                  mAs -= (mAs / 3600) * 3600;                // Recycle remainder
                                                                   }
 
                                                    wattsORmAh = String(mAh , DEC);
@@ -710,12 +723,12 @@ void refreshDisplay() {
                           */
                          
                          
-                         if (!negativeAmps)  currBattLevel = map(avgVoltage , 21000 , 24000 , 4 , 122);                      // According to SANYO 18650 datasheet : below 3.5v voltage plummets & between 3.5v and 4.1v discharge curve is ~linear
+                         if (!negativeAmps)  currBattLevel = map(avgVoltage , 21500 , 24000 , 4 , 122);                      // According to SANYO 18650 datasheet : below 3.5v voltage plummets & between 3.5v and 4.1v discharge curve is ~linear
                          else                currBattLevel = map(avgVoltage , 23000 , 25200 , 4 , 122);     
                          currBattLevel = constrain( currBattLevel , 4 , 122);
 
-                         if (!negativeAmps && !state_EXTERNAL_POWER) if (currBattLevel < prevBattLevel) prevBattLevel = currBattLevel;                // Mask momentary voltage recoveries in the fill bar (allow them when charging)
-                                                                     else                               currBattLevel = prevBattLevel;
+//                         if (!negativeAmps && !state_EXTERNAL_POWER) if (currBattLevel < prevBattLevel) prevBattLevel = currBattLevel;                // Mask momentary voltage recoveries in the fill bar (allow them when charging)
+//                                                                     else                               currBattLevel = prevBattLevel;
                      
 
                          OLED.fillRoundRect( 2 , 2 , currBattLevel , 12 , 2 , WHITE);
@@ -886,11 +899,11 @@ String divideBy1000(String input) {
 
 
 
-/* Resets Bluetooth Module every 15000 calls to it (~15s iff called every ms)
+/* Resets Bluetooth Module every 50000 calls to it
  */
 void bluetoothConnectionResuscitator() {
      
-     if  (timeAlone == 15000) {                                  // Reboot BT Module to ensure it always keeps trying to pair
+     if  (timeAlone == 30000) {                                  // Reboot BT Module to ensure it always keeps trying to pair
                               timeAlone = 0;
                 
                               turn    (btOFF);         
